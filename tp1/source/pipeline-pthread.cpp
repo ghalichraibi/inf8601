@@ -1,32 +1,79 @@
 #include <pthread.h>
 #include <cerrno>
 
+#include "filter.h"
 #include "log.h"
 #include "pipeline.h"
+#include "queue.h"
 
-struct worker_args {
+static constexpr int QUEUE_SIZE = 4;
+
+struct shared_args {
     image_dir_t* image_dir;
-    int return_value;
+    queue_t* queue;
 };
 
-static void* worker_main(void* arg) {
-    auto* args = static_cast<worker_args*>(arg);
+static void* loader(void* arg) {
+    auto* args     = static_cast<shared_args*>(arg);
+    queue_t* queue = args->queue;
 
-    args->return_value = pipeline_serial(args->image_dir);
+    while (true) {
+        image_t* image = image_dir_load_next(args->image_dir);
+        if (image == nullptr) {
+            break;
+        }
+        queue_push(queue, image);
+    }
+
+    queue_push(queue, nullptr);  // poison pill to signal the end
+
+    return nullptr;
+}
+
+static void* processing(void* arg) {
+    auto* args     = static_cast<shared_args*>(arg);
+    queue_t* queue = args->queue;
+
+    while (true) {
+        auto* image1 = static_cast<image_t*>(queue_pop(queue));
+        if (image1 == nullptr) {
+            break;
+        }
+
+        image_t* image2 = filter_scale_up(image1, 3);
+        image_destroy(image1);
+
+        image_t* image3 = filter_desaturate(image2);
+        image_destroy(image2);
+
+        image_t* image4 = filter_edge_detect(image3);
+        image_destroy(image3);
+
+        image_dir_save(args->image_dir, image4);
+        image_destroy(image4);
+    }
+
     return nullptr;
 }
 
 int pipeline_pthread(image_dir_t* image_dir) {
-    pthread_t thread;
-    worker_args args = {.image_dir = image_dir, .return_value = 0};
+    pthread_t loader_thread, processing_thread;
+    queue_t* queue = queue_create(QUEUE_SIZE);
 
-    errno = pthread_create(&thread, NULL, worker_main, &args);
-
-    if (errno != 0) {
-        LOG_ERROR_ERRNO("Failed to create pthread");
+    if (queue == nullptr) {
+        LOG_ERROR("Failed to create queue");
         return -1;
     }
 
-    pthread_join(thread, nullptr);
-    return args.return_value;
+    shared_args shared_args = {.image_dir = image_dir, .queue = queue};
+
+    pthread_create(&loader_thread, nullptr, loader, &shared_args);
+    pthread_create(&processing_thread, nullptr, processing, &shared_args);
+
+    pthread_join(loader_thread, nullptr);
+    pthread_join(processing_thread, nullptr);
+
+    queue_destroy(queue);
+
+    return 0;
 }
