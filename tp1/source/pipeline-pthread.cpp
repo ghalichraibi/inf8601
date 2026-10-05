@@ -1,21 +1,30 @@
 #include <pthread.h>
-#include <cerrno>
+#include <array>
 
 #include "filter.h"
 #include "log.h"
 #include "pipeline.h"
 #include "queue.h"
 
-static constexpr int QUEUE_SIZE = 4;
+constexpr int QUEUE_SIZE   = 4;
+constexpr int STAGE_COUNT  = 5;  // loader + scale_up + desaturate + edge_detect + saver
+constexpr int THREAD_COUNT = STAGE_COUNT;
+constexpr int QUEUE_COUNT  = STAGE_COUNT - 1;
 
-struct shared_args {
+using filter_fn = image_t* (*)(image_t*);
+using thread_fn = void* (*)(void*);
+
+struct stage_args {
+    thread_fn main_fn;
     image_dir_t* image_dir;
-    queue_t* queue;
+    queue_t* in;
+    queue_t* out;
+    filter_fn filter;
 };
 
-static void* loader(void* arg) {
-    auto* args     = static_cast<shared_args*>(arg);
-    queue_t* queue = args->queue;
+static void* load(void* arg) {
+    auto* args     = static_cast<stage_args*>(arg);
+    queue_t* queue = args->out;
 
     while (true) {
         image_t* image = image_dir_load_next(args->image_dir);
@@ -30,50 +39,70 @@ static void* loader(void* arg) {
     return nullptr;
 }
 
-static void* processing(void* arg) {
-    auto* args     = static_cast<shared_args*>(arg);
-    queue_t* queue = args->queue;
+static void* filter(void* arg) {
+    auto* stage = static_cast<stage_args*>(arg);
 
     while (true) {
-        auto* image1 = static_cast<image_t*>(queue_pop(queue));
-        if (image1 == nullptr) {
+        auto* image = static_cast<image_t*>(queue_pop(stage->in));
+        if (image == nullptr) {
             break;
         }
 
-        image_t* image2 = filter_scale_up(image1, 3);
-        image_destroy(image1);
+        image_t* new_image = stage->filter(image);
+        queue_push(stage->out, new_image);
 
-        image_t* image3 = filter_desaturate(image2);
-        image_destroy(image2);
+        image_destroy(image);
+    }
 
-        image_t* image4 = filter_edge_detect(image3);
-        image_destroy(image3);
+    queue_push(stage->out, nullptr);  // propagate the poison pill downstream
 
-        image_dir_save(args->image_dir, image4);
-        image_destroy(image4);
+    return nullptr;
+}
+
+static void* save(void* arg) {
+    auto* stage = static_cast<stage_args*>(arg);
+
+    while (true) {
+        auto* image = static_cast<image_t*>(queue_pop(stage->in));
+        if (image == nullptr) {
+            break;
+        }
+
+        image_dir_save(stage->image_dir, image);
+        image_destroy(image);
     }
 
     return nullptr;
 }
 
 int pipeline_pthread(image_dir_t* image_dir) {
-    pthread_t loader_thread, processing_thread;
-    queue_t* queue = queue_create(QUEUE_SIZE);
+    std::array<pthread_t, THREAD_COUNT> threads;
+    std::array<queue_t*, QUEUE_COUNT> queues;
 
-    if (queue == nullptr) {
-        LOG_ERROR("Failed to create queue");
-        return -1;
+    for (queue_t*& queue : queues) {
+        queue = queue_create(QUEUE_SIZE);
     }
 
-    shared_args shared_args = {.image_dir = image_dir, .queue = queue};
+    filter_fn filter_scale_up_3 = [](image_t* image) { return filter_scale_up(image, 3); };
 
-    pthread_create(&loader_thread, nullptr, loader, &shared_args);
-    pthread_create(&processing_thread, nullptr, processing, &shared_args);
+    std::array<stage_args, STAGE_COUNT> stages{
+        {{.main_fn = load, .image_dir = image_dir, .out = queues[0]},
+         {.main_fn = filter, .in = queues[0], .out = queues[1], .filter = filter_scale_up_3},
+         {.main_fn = filter, .in = queues[1], .out = queues[2], .filter = filter_desaturate},
+         {.main_fn = filter, .in = queues[2], .out = queues[3], .filter = filter_edge_detect},
+         {.main_fn = save, .image_dir = image_dir, .in = queues[3]}}};
 
-    pthread_join(loader_thread, nullptr);
-    pthread_join(processing_thread, nullptr);
+    for (int i = 0; i < STAGE_COUNT; i++) {
+        pthread_create(&threads[i], nullptr, stages[i].main_fn, &stages[i]);
+    }
 
-    queue_destroy(queue);
+    for (pthread_t thread : threads) {
+        pthread_join(thread, nullptr);
+    }
+
+    for (queue_t* queue : queues) {
+        queue_destroy(queue);
+    }
 
     return 0;
 }
