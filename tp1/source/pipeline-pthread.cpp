@@ -109,9 +109,11 @@ int pipeline_pthread(image_dir_t* image_dir) {
           .n_workers = workers(0.5)},
          {.main_fn = save, .image_dir = image_dir, .in = queues[3], .n_workers = workers(1.0)}}};
 
+    // consumers before producers: if a thread is refused, the loader has not started yet,
+    // so no image enters the pipeline and the shutdown below stays clean
     std::array<std::vector<pthread_t>, N_STAGES> threads;
     bool failed = false;
-    for (unsigned int i = 0; i < N_STAGES && !failed; i++) {
+    for (unsigned int i = N_STAGES; i-- > 0 && !failed;) {
         for (unsigned int w = 0; w < stages[i].n_workers; w++) {
             pthread_t thread;
             errno = pthread_create(&thread, nullptr, stages[i].main_fn, &stages[i]);

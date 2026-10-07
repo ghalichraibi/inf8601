@@ -45,6 +45,7 @@ require_images() {
 # run_pipeline <exécutable> <serial|pthread|tbb|all> [arguments supplémentaires...]
 run_pipeline() {
     local exe="$1" pipeline="$2"
+    shift 2  # le reste de "$@" = arguments supplémentaires pour l'exécutable
     build "$exe"
     require_images
     echo "==> $BUILD_DIR/$exe --directory $DATA_DIR --pipeline $pipeline $*"
