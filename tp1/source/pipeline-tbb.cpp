@@ -1,4 +1,4 @@
-#include <stdio.h>
+#include <algorithm>
 #include <thread>
 
 #include <tbb/parallel_pipeline.h>
@@ -6,7 +6,7 @@
 #include "filter.h"
 #include "pipeline.h"
 
-const size_t MAX_CONCURRENCY        = 2 * std::thread::hardware_concurrency();
+const size_t MAX_IMAGES_IN_FLIGHT   = std::max<size_t>(1, 2 * std::thread::hardware_concurrency());
 constexpr unsigned int SCALE_FACTOR = 3;
 
 int pipeline_tbb(image_dir_t* image_dir) {
@@ -42,6 +42,6 @@ int pipeline_tbb(image_dir_t* image_dir) {
         image_destroy(image);
     });
 
-    tbb::parallel_pipeline(MAX_CONCURRENCY, load & scale_up & desaturate & edge_detect & save);
+    tbb::parallel_pipeline(MAX_IMAGES_IN_FLIGHT, load & scale_up & desaturate & edge_detect & save);
     return 0;
 }
