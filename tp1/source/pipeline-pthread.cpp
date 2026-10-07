@@ -6,10 +6,10 @@
 #include "pipeline.h"
 #include "queue.h"
 
-constexpr int QUEUE_SIZE   = 4;
-constexpr int STAGE_COUNT  = 5;  // loader + scale_up + desaturate + edge_detect + saver
-constexpr int THREAD_COUNT = STAGE_COUNT;
-constexpr int QUEUE_COUNT  = STAGE_COUNT - 1;
+constexpr unsigned int QUEUE_SIZE   = 4;
+constexpr unsigned int STAGE_COUNT  = 5;  // loader + scale_up + desaturate + edge_detect + saver
+constexpr unsigned int THREAD_COUNT = STAGE_COUNT;
+constexpr unsigned int QUEUE_COUNT  = STAGE_COUNT - 1;
 
 using filter_fn = image_t* (*)(image_t*);
 using thread_fn = void* (*)(void*);
@@ -92,7 +92,7 @@ int pipeline_pthread(image_dir_t* image_dir) {
          {.main_fn = filter, .in = queues[2], .out = queues[3], .filter = filter_edge_detect},
          {.main_fn = save, .image_dir = image_dir, .in = queues[3]}}};
 
-    for (int i = 0; i < STAGE_COUNT; i++) {
+    for (unsigned int i = 0; i < STAGE_COUNT; i++) {
         pthread_create(&threads[i], nullptr, stages[i].main_fn, &stages[i]);
     }
 
